@@ -24,7 +24,7 @@ Globals:
     MemorySize: 512
     Tracing: Active
     AutoPublishAlias: live
-    Runtime: python3.8
+    Runtime: python3.12
     Layers:
       - !Sub arn:aws:lambda:${AWS::Region}:017000801446:layer:AWSLambdaPowertoolsPython:3
     Environment:
@@ -50,9 +50,9 @@ Resources:
     Properties:
       ContentUri: ./layers/
       CompatibleRuntimes:
-        - python3.8
+        - python3.12
     Metadata:
-      BuildMethod: python3.8
+      BuildMethod: python3.12
 
   CartApi:
     Type: AWS::Serverless::Api

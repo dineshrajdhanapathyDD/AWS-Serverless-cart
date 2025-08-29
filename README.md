@@ -1,161 +1,164 @@
-# AWS Serverless Shopping Cart
+# Serverless Shopping Cart Microservice
 
-A serverless e-commerce shopping cart application built with AWS services, featuring a Vue.js frontend and Python Lambda backend.
+This application is a sample application to demonstrate how you could implement a shopping cart microservice using 
+serverless technologies on AWS. The backend is built as a REST API interface, making use of [Amazon API Gateway](https://aws.amazon.com/api-gateway/), [AWS Lambda](https://aws.amazon.com/lambda/), [Amazon Cognito](https://aws.amazon.com/cognito/), and [Amazon DynamoDB](https://aws.amazon.com/dynamodb/). The frontend is a Vue.js application using the [AWS Amplify](https://aws-amplify.github.io/) SDK for authentication and communication with the API.
 
-## Architecture
+To assist in demonstrating the functionality, a bare bones mock "products" service has also been included. Since the 
+authentication parts are likely to be shared between components, there is a separate template for it. The front-end 
+doesn't make any real payment integration at this time.
 
-This application uses a serverless architecture with the following AWS services:
-- **AWS Lambda** - Backend API functions
-- **Amazon DynamoDB** - Shopping cart data storage
-- **Amazon Cognito** - User authentication
-- **Amazon API Gateway** - REST API endpoints
-- **Amazon SQS** - Asynchronous cart deletion processing
-- **AWS Amplify** - Frontend hosting and CI/CD
+## Architecture & Design
 
-## Project Structure
+![Architecture Diagram](./images/architecture.png)
 
-```
-├── backend/                    # Serverless backend services
-│   ├── shopping-cart-service/  # Cart management Lambda functions
-│   ├── product-mock-service/   # Mock product catalog service
-│   ├── layers/                 # Shared Lambda layers
-│   └── *.yaml                  # SAM templates
-├── frontend/                   # Vue.js web application
-│   ├── src/                    # Vue.js source code
-│   ├── public/                 # Static assets
-│   └── package.json            # Frontend dependencies
-├── amplify-ci/                 # Amplify deployment template
-└── amplify.yml                 # Amplify build configuration
-```
+## Design Notes
 
-## Features
+Before building the application, I set some requirements on how the cart should behave:
 
-- **User Authentication** - Cognito-based user registration and login
-- **Product Catalog** - Browse available products
-- **Shopping Cart** - Add, update, remove items from cart
-- **Cart Migration** - Transfer anonymous cart to authenticated user
-- **Checkout Process** - Complete purchase workflow
-- **Real-time Updates** - DynamoDB streams for cart synchronization
+- Users should be able to add items to the cart without logging in (an "anonymous cart"), and that cart should persist 
+across browser restarts etc.
+- When logging in, if there were products in an anonymous cart, they should be added to the user's cart from any 
+previous logged in sessions.
+- When logging out, the anonymous cart should not have products in it any longer.
+- Items in an anonymous cart should be removed after a period of time, and items in a logged in cart should persist 
+for a longer period.
+- Admin users to be able to get an aggregated view of the total number of each product in users' carts at any time.
 
-## Prerequisites
+### Cart Migration
 
-- AWS CLI configured with appropriate permissions
-- SAM CLI installed
-- Node.js and Yarn
-- Python 3.8+
+When an item is added to the cart, an item is written in DynamoDB with an identifier which matches a randomly generated 
+(uuid) cookie which is set in the browser. This allows a user to add items to cart and come back to the page later 
+without losing the items they have added. When the user logs in, these items will be removed, and replaced with items 
+with a user id as the pk. If the user already had that product in their cart from a previous logged in session, the 
+quantities would be summed. Because we don't need the deletion of old items to happen immediately as part of a 
+synchronous workflow, we put messages onto an SQS queue, which triggers a worker function to delete the messages.  
 
-## Local Development
+To expire items from users' shopping carts, DynamoDB's native functionality is used where a TTL is written along with 
+the item, after which the item should be removed. In this implementation, the TTL defaults to 1 day for anonymous 
+carts, and 7 days for logged in carts.  
 
-### Backend Setup
+### Aggregated View of Products in Carts
 
-1. Navigate to backend directory:
-```bash
-cd backend
-```
+It would be possible to scan our entire DynamoDB table and sum up the quantities of all the products, but this will be 
+expensive past a certain scale. Instead, we can calculate the total as a running process, and keep track of the total 
+amount.  
 
-2. Deploy authentication service:
-```bash
-TEMPLATE=auth S3_BUCKET=your-bucket make deploy
-```
+When an item is added, deleted or updated in DynamoDB, an event is put onto DynamoDB Streams, which in turn triggers a 
+Lambda function. This function calculates the change in total quantity for each product in users' carts, and writes the 
+quantity back to DynamoDB. The Lambda function is configured so that it will run after either 60 seconds pass, or 100 
+new events are on the stream. This would enable an admin user to get real time data about the popular products, which 
+could in turn help anticipate inventory. In this implementation, the API is exposed without authentication to 
+demonstrate the functionality.  
 
-3. Deploy product mock service:
-```bash
-TEMPLATE=product-mock S3_BUCKET=your-bucket make deploy
-```
 
-4. Deploy shopping cart service:
-```bash
-TEMPLATE=shoppingcart-service S3_BUCKET=your-bucket make deploy
-```
-
-### Frontend Setup
-
-1. Navigate to frontend directory:
-```bash
-cd frontend
-```
-
-2. Install dependencies and start development server:
-```bash
-make serve
-```
-
-## Deployment
-
-### Using AWS Amplify
-
-1. Deploy the Amplify infrastructure:
-```bash
-aws cloudformation deploy \
-  --template-file amplify-ci/amplify-template.yaml \
-  --stack-name amplify-shopping-cart \
-  --parameter-overrides \
-    Repository=https://github.com/your-repo/AWS-Serverless-Cart \
-    OauthToken=your-github-token \
-    SrcS3Bucket=your-source-bucket \
-  --capabilities CAPABILITY_IAM
-```
-
-2. Connect your repository to Amplify Console for automatic deployments
-
-### Manual Deployment
-
-1. Deploy backend services using SAM CLI
-2. Build and deploy frontend to S3/CloudFront
-3. Update CORS settings with frontend domain
-
-## Environment Variables
-
-### Backend
-- `TABLE_NAME` - DynamoDB table name
-- `ALLOWED_ORIGIN` - Frontend domain for CORS
-- `PRODUCT_SERVICE_URL` - Product service API endpoint
-- `USERPOOL_ID` - Cognito User Pool ID
-
-### Frontend
-- `ORIGIN` - Application domain
-- `STACKNAME` - CloudFormation stack name
-
-## API Endpoints
+## Api Design
 
 ### Shopping Cart Service
-- `GET /cart` - List cart items
-- `POST /cart` - Add item to cart
-- `PUT /cart/{product_id}` - Update cart item
-- `POST /cart/migrate` - Migrate anonymous cart
-- `POST /cart/checkout` - Checkout cart
-- `GET /cart/{product_id}/total` - Get cart total
 
-### Product Service
-- `GET /product` - List all products
-- `GET /product/{product_id}` - Get product details
+GET  
+`/cart`  
+Retrieves the shopping cart for a user who is either anonymous or logged in.  
 
-## Testing
+POST  
+`/cart`  
+Accepts a product id and quantity as json. Adds specified quantity of an item to cart.  
 
-Run backend tests:
-```bash
-cd backend
-make tests
+`/cart/migrate`  
+Called after logging in - migrates items in an anonymous user's cart to belong to their logged in user. If you already 
+have a cart on your logged in user, your "anonymous cart" will be merged with it when you log in.
+
+`/cart/checkout`  
+Currently just empties cart.
+
+PUT  
+`/cart/{product-id}`  
+Accepts a product id and quantity as json. Updates quantity of given item to provided quantity.  
+
+GET  
+`/cart/{product-id}/total`  
+Returns the total amount of a given product across all carts. This API is not used by the frontend but can be manually 
+called to test.  
+
+### Product Mock Service
+
+GET  
+`/product`  
+Returns details for all products.  
+
+`/product/{product_id}`  
+Returns details for a single product.  
+
+## Running the Example
+
+### Requirements
+
+python >= 3.8.0
+boto3
+SAM CLI, >= version 0.50.0  
+AWS CLI  
+yarn  
+
+### Setup steps
+
+Fork the github repo, then clone your fork locally: 
+`git clone https://github.com/<your-github-username>/aws-serverless-shopping-cart && cd aws-serverless-shopping-cart`
+
+If you wish to use a named profile for your AWS credentials, you can set the environment variable `AWS_PROFILE` before 
+running the below commands. For a profile named "development": `export AWS_PROFILE=development`.  
+
+You now have 2 options - you can deploy the backend and run the frontend locally, or you can deploy the whole project 
+using the AWS Amplify console.
+
+## Option 1 - Deploy backend and run frontend locally
+### Deploy the Backend
+
+An S3 bucket will be automatically created for you which will be used for deploying source code to AWS. If you wish to 
+use an existing bucket instead, you can manually set the `S3_BUCKET` environment variable to the name of your bucket.  
+
+Build and deploy the resources:  
+``` bash
+make backend  # Creates S3 bucket if not existing already, then deploys CloudFormation stacks for authentication, a 
+product mock service and the shopping cart service.  
 ```
 
-## Cleanup
+### Run the Frontend Locally
 
-Delete all resources:
-```bash
-cd backend
-TEMPLATE=shoppingcart-service make delete
-TEMPLATE=product-mock make delete
-TEMPLATE=auth make delete
+Start the frontend locally:  
+``` bash
+make frontend-serve  # Retrieves backend config from ssm parameter store to a .env file, then starts service.  
 ```
 
-## Contributing
+Once the service is running, you can access the frontend on http://localhost:8080/ and start adding items to your cart. 
+You can create an account by clicking on "Sign In" then "Create Account". Be sure to use a valid email address as 
+you'll need to retrieve the verification code.
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+**Note:** CORS headers on the backend service default to allowing http://localhost:8080/. You will see CORS errors if 
+you access the frontend using the ip (http://127.0.0.1:8080/), or using a port other than 8080.  
+
+### Clean Up
+Delete the CloudFormation stacks created by this project:
+``` bash
+make backend-delete
+```
+
+## Option 2 - Automatically deploy backend and frontend using Amplify Console
+
+
+[![One-click deployment](https://oneclick.amplifyapp.com/button.svg)](https://console.aws.amazon.com/amplify/home#/deploy?repo=https://github.com/aws-samples/aws-serverless-shopping-cart)
+
+1) Use **1-click deployment** button above, and continue by clicking "Connect to Github"
+2) If you don't have an IAM Service Role with admin permissions, select "Create new role". Otherwise proceed to step 5) 
+3) Select "Amplify" from the drop-down, and select "Amplify - Backend Deployment", then click "Next".
+4) Click "Next" again, then give the role a name and click "Create role"
+5) In the Amplify console and select the role you created, then click "Save and deploy"
+6) Amplify Console will fork this repository into your GitHub account and deploy it for you
+7) You should now be able to see your app being deployed in the [Amplify Console](https://console.aws.amazon.com/amplify/home)
+8) Within your new app in Amplify Console, wait for deployment to complete (this should take approximately 12 minutes for the first deploy)
+
+
+### Clean Up
+Delete the CloudFormation stacks created by this project. There are 3 of them, with names starting with "aws-serverless-shopping-cart-".
 
 ## License
 
-This project is licensed under the MIT License.
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.  
